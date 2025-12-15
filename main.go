@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,6 +15,7 @@ import (
 var (
 	vaultDir    string
 	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
+	docStyle    = lipgloss.NewStyle().Margin(1, 2)
 )
 
 func init() {
@@ -24,25 +26,43 @@ func init() {
 	vaultDir = fmt.Sprintf("%s/.totion", homeDir)
 }
 
+type item struct {
+	title, desc string
+}
+
+func (i item) Title() string       { return i.title }
+func (i item) Description() string { return i.desc }
+func (i item) FilterValue() string { return i.title }
+
 type model struct {
 	newFIleInput           textinput.Model
 	createFileInputVisible bool
 	currentFile            *os.File
 	noteTextArea           textarea.Model
+	list                   list.Model
+	showingList            bool
 }
 
 func (m model) Init() tea.Cmd {
-	return nil
+	return tea.WindowSizeCmd
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
+
+	case tea.WindowSizeMsg:
+		h, v := docStyle.GetFrameSize()
+		m.list.SetSize(msg.Width-h, msg.Height-v)
+
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c":
+		case "ctrl+c", "q":
 			return m, tea.Quit
+		case "ctrl+l":
+			m.showingList = true
+			return m, nil
 		case "ctrl+n":
 			m.createFileInputVisible = true
 			return m, nil
@@ -109,6 +129,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.currentFile != nil {
 		m.noteTextArea, cmd = m.noteTextArea.Update(msg)
 	}
+
+	if m.showingList {
+		m.list, cmd = m.list.Update(msg)
+	}
 	return m, cmd
 }
 
@@ -129,7 +153,7 @@ func (m model) View() string {
 
 	welcome := WelcomeStyle.Render("📒 Welcome to Totion")
 
-	help := HelpStyle.Render("Ctrl+N: new file | Ctrl+L: list files | Esc: back/save | Ctrl+S: save | Ctrl+C: quit")
+	help := HelpStyle.Render("Ctrl+N: new file | Ctrl+L: list files | Ctrl+S: save | Ctrl+C: quit")
 
 	view := ""
 
@@ -139,6 +163,10 @@ func (m model) View() string {
 
 	if m.currentFile != nil {
 		view = m.noteTextArea.View()
+	}
+
+	if m.showingList {
+		view = m.list.View()
 	}
 
 	return fmt.Sprintf("\n%s\n\n%s\n\n%s", welcome, view, help)
@@ -166,10 +194,18 @@ func initializeModel() model {
 	ta.Placeholder = "Write your note here..."
 	ta.Focus()
 
+	// list
+	noteList := listFiles()
+
+	lst := list.New(noteList, list.NewDefaultDelegate(), 0, 0)
+	lst.Title = "Notes"
+	lst.Select(0)
+
 	return model{
 		newFIleInput:           ti,
 		createFileInputVisible: false,
 		noteTextArea:           ta,
+		list:                   lst,
 	}
 }
 
@@ -180,4 +216,31 @@ func main() {
 		fmt.Printf("Alas, there is an error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func listFiles() []list.Item {
+	items := make([]list.Item, 0)
+
+	entries, err := os.ReadDir(vaultDir)
+	if err != nil {
+		log.Fatal("Error reading notes")
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+
+			modTime := info.ModTime().Format("2006-01-02 15:04")
+
+			items = append(items, item{
+				title: entry.Name(),
+				desc:  fmt.Sprintf("Modified: %s", modTime),
+			})
+		}
+	}
+
+	return items
 }

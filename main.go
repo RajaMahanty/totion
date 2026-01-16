@@ -26,6 +26,8 @@ func init() {
 	vaultDir = fmt.Sprintf("%s/.totion", homeDir)
 }
 
+/* ---------- LIST ITEM ---------- */
+
 type item struct {
 	title, desc string
 }
@@ -34,18 +36,24 @@ func (i item) Title() string       { return i.title }
 func (i item) Description() string { return i.desc }
 func (i item) FilterValue() string { return i.title }
 
+/* ---------- MODEL ---------- */
+
 type model struct {
-	newFIleInput           textinput.Model
+	newFileInput           textinput.Model
 	createFileInputVisible bool
 	currentFile            *os.File
 	noteTextArea           textarea.Model
 	list                   list.Model
 	showingList            bool
+	width                  int
+	height                 int
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.WindowSizeCmd
+	return nil
 }
+
+/* ---------- UPDATE ---------- */
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
@@ -53,77 +61,123 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+
 		h, v := docStyle.GetFrameSize()
-		m.list.SetSize(msg.Width-h, msg.Height-v)
+		listHeight := msg.Height - v - fixedUIHeight()
+		if listHeight < 0 {
+			listHeight = 0
+		}
+
+		m.list.SetSize(msg.Width-h, listHeight)
 
 	case tea.KeyMsg:
 		switch msg.String() {
+
 		case "ctrl+c", "q":
 			return m, tea.Quit
+
+		case "esc":
+			if m.createFileInputVisible {
+				m.createFileInputVisible = false
+			}
+
+			if m.currentFile != nil {
+				m.currentFile = nil
+			}
+
+			if m.showingList {
+				if m.list.FilterState() == list.Filtering {
+					break
+				}
+				m.showingList = false
+			}
+
+			m.noteTextArea.SetValue("")
+
+			return m, nil
+
 		case "ctrl+l":
+			noteList := listFiles()
+			m.list.SetItems(noteList)
 			m.showingList = true
 			return m, nil
+
 		case "ctrl+n":
 			m.createFileInputVisible = true
+			m.showingList = false
 			return m, nil
+
 		case "ctrl+s":
-			// save
 			if m.currentFile == nil {
 				break
 			}
 
-			if err := m.currentFile.Truncate(0); err != nil {
-				fmt.Println("Cannot save the file :( ")
-				return m, nil
-			}
-
-			if _, err := m.currentFile.Seek(0, 0); err != nil {
-				fmt.Println("Cannot save the file :( ")
-				return m, nil
-			}
-
-			if _, err := m.currentFile.WriteString(m.noteTextArea.Value()); err != nil {
-				fmt.Println("Cannot save the file :( ")
-				return m, nil
-			}
-
-			if err := m.currentFile.Close(); err != nil {
-				fmt.Println("Cannot save the file :( ")
-				return m, nil
-			}
+			_ = m.currentFile.Truncate(0)
+			_, _ = m.currentFile.Seek(0, 0)
+			_, _ = m.currentFile.WriteString(m.noteTextArea.Value())
+			_ = m.currentFile.Close()
 
 			m.currentFile = nil
 			m.noteTextArea.SetValue("")
-
 			return m, nil
+
 		case "enter":
 			if m.currentFile != nil {
 				break
 			}
-			// todo: create file
-			fileName := m.newFIleInput.Value()
-			if fileName != "" {
-				filepath := fmt.Sprintf("%s/%s.md", vaultDir, fileName)
 
-				if _, err := os.Stat(filepath); err == nil {
-					return m, nil
+			if m.showingList {
+				item, ok := m.list.SelectedItem().(item)
+				if ok {
+					filepath := fmt.Sprintf("%s/%s", vaultDir, item.title)
+
+					content, err := os.ReadFile(filepath)
+					
+					if err != nil {
+						log.Printf("Error reading file: %v", err)
+						return m, nil
+					}
+					
+					m.noteTextArea.SetValue(string(content))
+					f, err := os.OpenFile(filepath, os.O_RDWR, 0644)
+					
+					if err != nil {
+						log.Printf("Error reading file: %v", err)
+						return m, nil
+					}
+
+					m.currentFile = f
+
+					m.showingList = false
 				}
 
-				f, err := os.Create(filepath)
+				return m, nil
+			}
+
+			fileName := m.newFileInput.Value()
+			if fileName != "" {
+				path := fmt.Sprintf("%s/%s.md", vaultDir, fileName)
+				if _, err := os.Stat(path); err == nil {
+					break
+				}
+
+				f, err := os.Create(path)
 				if err != nil {
-					log.Fatalf("%v", err)
+					log.Fatal(err)
 				}
 
 				m.currentFile = f
 				m.createFileInputVisible = false
-				m.newFIleInput.SetValue("")
+				m.newFileInput.SetValue("")
 			}
 			return m, nil
 		}
 	}
 
 	if m.createFileInputVisible {
-		m.newFIleInput, cmd = m.newFIleInput.Update(msg)
+		m.newFileInput, cmd = m.newFileInput.Update(msg)
 	}
 
 	if m.currentFile != nil {
@@ -133,114 +187,122 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.showingList {
 		m.list, cmd = m.list.Update(msg)
 	}
+
 	return m, cmd
 }
 
+/* ---------- VIEW ---------- */
+
 func (m model) View() string {
-	WelcomeStyle := lipgloss.NewStyle().
+
+	welcomeStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("#FFFFFF")).
 		Background(lipgloss.Color("#7D56F4")).
-		Padding(1, 4).
-		Margin(1)
+		Padding(1, 4)
 
-	HelpStyle := lipgloss.NewStyle().
+	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#7D56F4")).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#7D56F4")).
-		Padding(1, 2).
-		MarginTop(1)
+		Padding(1, 2)
 
-	welcome := WelcomeStyle.Render("📒 Welcome to Totion")
+	welcome := welcomeStyle.Render("📒 Welcome to Totion")
+	help := helpStyle.Render("Ctrl+N: new file | Ctrl+L: list | Esc: back | Ctrl+S: save | Ctrl+C: quit")
 
-	help := HelpStyle.Render("Ctrl+N: new file | Ctrl+L: list files | Ctrl+S: save | Ctrl+C: quit")
+	var content string
 
-	view := ""
-
-	if m.createFileInputVisible {
-		view = m.newFIleInput.View()
+	switch {
+	case m.createFileInputVisible:
+		content = m.newFileInput.View()
+	case m.currentFile != nil:
+		content = m.noteTextArea.View()
+	case m.showingList:
+		content = m.list.View()
+	default:
+		content = ""
 	}
 
-	if m.currentFile != nil {
-		view = m.noteTextArea.View()
-	}
-
-	if m.showingList {
-		view = m.list.View()
-	}
-
-	return fmt.Sprintf("\n%s\n\n%s\n\n%s", welcome, view, help)
+	return docStyle.Render(
+		lipgloss.JoinVertical(
+			lipgloss.Left,
+			welcome,
+			"",
+			content,
+			"",
+			help,
+		),
+	)
 }
+
+/* ---------- INIT MODEL ---------- */
 
 func initializeModel() model {
 
-	err := os.MkdirAll(vaultDir, 0750)
-	if err != nil {
-		log.Fatal(err)
-	}
+	_ = os.MkdirAll(vaultDir, 0750)
 
-	// initialize new file input
 	ti := textinput.New()
 	ti.Placeholder = "What would you like to call it?"
 	ti.Focus()
-	ti.CharLimit = 156
 	ti.Width = 50
 	ti.Cursor.Style = cursorStyle
 	ti.PromptStyle = cursorStyle
 	ti.TextStyle = cursorStyle
 
-	// textarea
 	ta := textarea.New()
 	ta.Placeholder = "Write your note here..."
 	ta.Focus()
 
-	// list
-	noteList := listFiles()
-
-	lst := list.New(noteList, list.NewDefaultDelegate(), 0, 0)
-	lst.Title = "Notes"
-	lst.Select(0)
+	lst := list.New(listFiles(), list.NewDefaultDelegate(), 0, 0)
+	lst.Title = "All Notes 📁"
 
 	return model{
-		newFIleInput:           ti,
-		createFileInputVisible: false,
-		noteTextArea:           ta,
-		list:                   lst,
+		newFileInput: ti,
+		noteTextArea: ta,
+		list:         lst,
 	}
 }
 
-func main() {
-	fmt.Print("Welcome to Totion!")
-	p := tea.NewProgram(initializeModel())
-	if _, err := p.Run(); err != nil {
-		fmt.Printf("Alas, there is an error: %v\n", err)
-		os.Exit(1)
-	}
+/* ---------- HELPERS ---------- */
+
+func fixedUIHeight() int {
+	// welcome + spacing + help box
+	return 7
 }
 
 func listFiles() []list.Item {
-	items := make([]list.Item, 0)
+	items := []list.Item{}
 
 	entries, err := os.ReadDir(vaultDir)
 	if err != nil {
-		log.Fatal("Error reading notes")
+		return items
 	}
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			info, err := entry.Info()
-			if err != nil {
-				continue
-			}
-
-			modTime := info.ModTime().Format("2006-01-02 15:04")
-
-			items = append(items, item{
-				title: entry.Name(),
-				desc:  fmt.Sprintf("Modified: %s", modTime),
-			})
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
 		}
+
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+
+		items = append(items, item{
+			title: e.Name(),
+			desc:  "Modified: " + info.ModTime().Format("2006-01-02 15:04"),
+		})
 	}
 
 	return items
+}
+
+/* ---------- MAIN ---------- */
+
+func main() {
+	p := tea.NewProgram(initializeModel(), tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
+	}
 }
